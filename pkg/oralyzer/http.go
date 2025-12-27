@@ -1,4 +1,4 @@
-package main
+package oralyzer
 
 import (
 	"crypto/tls"
@@ -10,19 +10,28 @@ import (
 	"time"
 )
 
-// NewHTTPClient creates a new HTTP client with connection pooling and proxy support
-func NewHTTPClient(config *Config) (*HTTPClient, error) {
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+// newHTTPClient creates a new HTTP client with connection pooling and proxy support.
+func newHTTPClient(config *Config) (*httpClient, error) {
+	insecureSkipVerify := true
+	if config != nil {
+		insecureSkipVerify = config.InsecureSkipVerify
+	}
+
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, // Like Python's verify=False
+			InsecureSkipVerify: insecureSkipVerify,
 		},
 	}
 
 	// Configure proxy if provided
-	if config.UseProxy && config.ProxyURL != "" {
+	if config != nil && config.ProxyURL != "" {
 		proxyURL, err := url.Parse(config.ProxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid proxy URL: %w", err)
@@ -30,25 +39,38 @@ func NewHTTPClient(config *Config) (*HTTPClient, error) {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   config.Timeout,
-		// Don't follow redirects - like Python's allow_redirects=False
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	timeout := 10 * time.Second
+	if config != nil && config.Timeout > 0 {
+		timeout = config.Timeout
 	}
 
-	return &HTTPClient{
+	checkRedirect := func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	if config != nil && config.FollowRedirects {
+		checkRedirect = nil
+	}
+
+	client := &http.Client{
+		Transport:     transport,
+		Timeout:       timeout,
+		CheckRedirect: checkRedirect,
+	}
+
+	proxyURL := ""
+	if config != nil {
+		proxyURL = config.ProxyURL
+	}
+
+	return &httpClient{
 		client:     client,
 		userAgents: UserAgents,
-		proxyURL:   config.ProxyURL,
+		proxyURL:   proxyURL,
 	}, nil
 }
 
-// Get performs an HTTP GET request with random User-Agent
-func (c *HTTPClient) Get(targetURL string, params map[string]string) (*http.Response, []byte, error) {
-	// Build URL with parameters
+// Get performs an HTTP GET request with random User-Agent.
+func (c *httpClient) Get(targetURL string, params map[string]string) (*http.Response, []byte, error) {
 	finalURL, err := buildRequestURL(targetURL, params)
 	if err != nil {
 		return nil, nil, err
@@ -59,7 +81,6 @@ func (c *HTTPClient) Get(targetURL string, params map[string]string) (*http.Resp
 		return nil, nil, err
 	}
 
-	// Set random User-Agent
 	req.Header.Set("User-Agent", c.randomUserAgent())
 
 	resp, err := c.client.Do(req)
@@ -67,7 +88,6 @@ func (c *HTTPClient) Get(targetURL string, params map[string]string) (*http.Resp
 		return nil, nil, err
 	}
 
-	// Read body
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
@@ -77,20 +97,15 @@ func (c *HTTPClient) Get(targetURL string, params map[string]string) (*http.Resp
 	return resp, body, nil
 }
 
-// GetWithContext performs an HTTP GET request with context support
-func (c *HTTPClient) GetWithContext(targetURL string, params map[string]string) (*http.Response, []byte, error) {
-	return c.Get(targetURL, params)
-}
-
-// randomUserAgent returns a random User-Agent string
-func (c *HTTPClient) randomUserAgent() string {
+// randomUserAgent returns a random User-Agent string.
+func (c *httpClient) randomUserAgent() string {
 	if len(c.userAgents) == 0 {
 		return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 	}
 	return c.userAgents[rand.Intn(len(c.userAgents))]
 }
 
-// buildRequestURL constructs URL with query parameters
+// buildRequestURL constructs URL with query parameters.
 func buildRequestURL(baseURL string, params map[string]string) (string, error) {
 	if len(params) == 0 {
 		return baseURL, nil
@@ -101,10 +116,7 @@ func buildRequestURL(baseURL string, params map[string]string) (string, error) {
 		return "", err
 	}
 
-	// Get existing query parameters
 	query := parsedURL.Query()
-
-	// Add/replace with new parameters
 	for key, value := range params {
 		query.Set(key, value)
 	}
@@ -113,16 +125,11 @@ func buildRequestURL(baseURL string, params map[string]string) (string, error) {
 	return parsedURL.String(), nil
 }
 
-// EnsureScheme adds http:// if URL has no scheme
+// EnsureScheme adds http:// if URL has no scheme.
 func EnsureScheme(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" {
 		return "http://" + rawURL
 	}
 	return rawURL
-}
-
-func init() {
-	// Seed random for User-Agent rotation
-	rand.Seed(time.Now().UnixNano())
 }

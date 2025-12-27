@@ -1,4 +1,4 @@
-package main
+package oralyzer
 
 import (
 	"context"
@@ -11,25 +11,28 @@ const (
 	resultBufferSize = 50
 )
 
-// NewScanner creates a new scanner instance
+// NewScanner creates a new scanner instance.
 func NewScanner(config *Config) (*Scanner, error) {
+	if config == nil {
+		config = &Config{}
+	}
+
+	// Set defaults
+	if config.Concurrency <= 0 {
+		config.Concurrency = 10
+	}
+	if config.Timeout <= 0 {
+		config.Timeout = 10 * 1e9 // 10 seconds
+	}
+
 	// Create HTTP client
-	httpClient, err := NewHTTPClient(config)
+	httpClient, err := newHTTPClient(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
 
 	// Load payloads
-	payloads, err := NewPayloadManager(config.PayloadFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load payloads: %w", err)
-	}
-
-	// Create output manager
-	output, err := NewOutputManager(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create output manager: %w", err)
-	}
+	payloads := NewPayloadManager(config.Payloads)
 
 	// Create detector
 	detector := NewDetector(payloads.GetPayloads())
@@ -43,20 +46,33 @@ func NewScanner(config *Config) (*Scanner, error) {
 		payloads:    payloads,
 		detector:    detector,
 		crlfScanner: crlfScanner,
-		jobs:        make(chan ScanJob, jobBufferSize),
-		results:     make(chan ScanResult, resultBufferSize),
-		output:      output,
+		jobs:        make(chan scanJob, jobBufferSize),
+		results:     make(chan Result, resultBufferSize),
 	}, nil
 }
 
-// Start begins the scanning process
-func (s *Scanner) Start(ctx context.Context) error {
+// Scan performs a scan and returns all results.
+func (s *Scanner) Scan(ctx context.Context) ([]Result, error) {
+	var allResults []Result
+	var mu sync.Mutex
+
+	err := s.ScanWithCallback(ctx, func(result Result) {
+		mu.Lock()
+		allResults = append(allResults, result)
+		mu.Unlock()
+	})
+
+	return allResults, err
+}
+
+// ScanWithCallback performs a scan and calls the handler for each result.
+func (s *Scanner) ScanWithCallback(ctx context.Context, handler ResultHandler) error {
 	// Start result collector
 	var collectorWg sync.WaitGroup
 	collectorWg.Add(1)
 	go func() {
 		defer collectorWg.Done()
-		s.collectResults(ctx)
+		s.collectResults(ctx, handler)
 	}()
 
 	// Start workers
@@ -75,16 +91,28 @@ func (s *Scanner) Start(ctx context.Context) error {
 	return nil
 }
 
-// startWorkers launches worker goroutines
+// ScanURL scans a single URL and returns results.
+func (s *Scanner) ScanURL(ctx context.Context, targetURL string) ([]Result, error) {
+	s.config.URLs = []string{targetURL}
+	return s.Scan(ctx)
+}
+
+// ScanURLs scans multiple URLs and returns results.
+func (s *Scanner) ScanURLs(ctx context.Context, urls []string) ([]Result, error) {
+	s.config.URLs = urls
+	return s.Scan(ctx)
+}
+
+// startWorkers launches worker goroutines.
 func (s *Scanner) startWorkers(ctx context.Context, numWorkers int) {
 	for i := 0; i < numWorkers; i++ {
 		s.wg.Add(1)
-		go s.worker(ctx, i)
+		go s.worker(ctx)
 	}
 }
 
-// worker processes jobs from the job channel
-func (s *Scanner) worker(ctx context.Context, id int) {
+// worker processes jobs from the job channel.
+func (s *Scanner) worker(ctx context.Context) {
 	defer s.wg.Done()
 
 	for {
@@ -105,8 +133,8 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 	}
 }
 
-// processJob executes a single scan job
-func (s *Scanner) processJob(ctx context.Context, job ScanJob) ScanResult {
+// processJob executes a single scan job.
+func (s *Scanner) processJob(ctx context.Context, job scanJob) Result {
 	switch job.Mode {
 	case ModeCRLF:
 		return s.processCRLFJob(job)
@@ -115,12 +143,11 @@ func (s *Scanner) processJob(ctx context.Context, job ScanJob) ScanResult {
 	}
 }
 
-// processRedirectJob handles open redirect scanning
-func (s *Scanner) processRedirectJob(job ScanJob) ScanResult {
-	// Execute HTTP request
+// processRedirectJob handles open redirect scanning.
+func (s *Scanner) processRedirectJob(job scanJob) Result {
 	resp, body, err := s.httpClient.Get(job.URL, job.Params)
 	if err != nil {
-		return ScanResult{
+		return Result{
 			URL:         job.URL,
 			OriginalURL: job.BaseURL,
 			Payload:     job.Payload,
@@ -128,13 +155,11 @@ func (s *Scanner) processRedirectJob(job ScanJob) ScanResult {
 		}
 	}
 
-	// Get final URL
 	finalURL := job.URL
 	if len(job.Params) > 0 {
 		finalURL, _ = buildRequestURL(job.URL, job.Params)
 	}
 
-	// Analyze response
 	result := s.detector.Analyze(resp, body, finalURL)
 	result.OriginalURL = job.BaseURL
 	result.Payload = job.Payload
@@ -142,12 +167,12 @@ func (s *Scanner) processRedirectJob(job ScanJob) ScanResult {
 	return result
 }
 
-// processCRLFJob handles CRLF injection scanning
-func (s *Scanner) processCRLFJob(job ScanJob) ScanResult {
+// processCRLFJob handles CRLF injection scanning.
+func (s *Scanner) processCRLFJob(job scanJob) Result {
 	return s.crlfScanner.TestPayload(job)
 }
 
-// dispatchJobs generates and sends jobs to workers
+// dispatchJobs generates and sends jobs to workers.
 func (s *Scanner) dispatchJobs(ctx context.Context) {
 	defer close(s.jobs)
 
@@ -158,16 +183,12 @@ func (s *Scanner) dispatchJobs(ctx context.Context) {
 		default:
 		}
 
-		PrintInfo("Target: %s", targetURL)
+		var jobs []scanJob
 
-		var jobs []ScanJob
-
-		switch s.config.ScanMode {
+		switch s.config.Mode {
 		case ModeCRLF:
-			PrintInfo("Scanning for CRLF injection")
 			jobs = s.crlfScanner.GenerateJobs(targetURL)
 		default:
-			PrintInfo("Infusing payloads")
 			jobs = s.payloads.GenerateTestCases(targetURL)
 		}
 
@@ -181,26 +202,24 @@ func (s *Scanner) dispatchJobs(ctx context.Context) {
 	}
 }
 
-// collectResults processes results from workers
-func (s *Scanner) collectResults(ctx context.Context) {
+// collectResults processes results from workers.
+func (s *Scanner) collectResults(ctx context.Context, handler ResultHandler) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Drain remaining results
 			for result := range s.results {
-				s.output.Write(result)
+				if handler != nil {
+					handler(result)
+				}
 			}
 			return
 		case result, ok := <-s.results:
 			if !ok {
 				return
 			}
-			s.output.Write(result)
+			if handler != nil {
+				handler(result)
+			}
 		}
 	}
-}
-
-// Stop gracefully shuts down the scanner
-func (s *Scanner) Stop() {
-	s.output.Flush()
 }

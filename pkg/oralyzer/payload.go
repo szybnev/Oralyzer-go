@@ -1,41 +1,24 @@
-package main
+package oralyzer
 
 import (
 	"bufio"
-	_ "embed"
 	"net/url"
 	"os"
 	"strings"
 )
 
-//go:embed payloads.txt
-var embeddedPayloads string
-
-// NewPayloadManager creates a payload manager
-func NewPayloadManager(customFile string) (*PayloadManager, error) {
-	var payloads []string
-	var err error
-
-	if customFile != "" {
-		payloads, err = loadPayloadsFromFile(customFile)
-	} else {
-		payloads = loadEmbeddedPayloads()
+// NewPayloadManager creates a payload manager with custom or default payloads.
+func NewPayloadManager(customPayloads []string) *PayloadManager {
+	payloads := customPayloads
+	if len(payloads) == 0 {
+		payloads = DefaultPayloads
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
-	return &PayloadManager{basePayloads: payloads}, nil
+	return &PayloadManager{basePayloads: payloads}
 }
 
-// loadEmbeddedPayloads loads payloads from embedded file
-func loadEmbeddedPayloads() []string {
-	return parsePayloadLines(embeddedPayloads)
-}
-
-// loadPayloadsFromFile loads payloads from external file
-func loadPayloadsFromFile(path string) ([]string, error) {
+// LoadPayloadsFromFile loads payloads from an external file.
+func LoadPayloadsFromFile(path string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -54,25 +37,12 @@ func loadPayloadsFromFile(path string) ([]string, error) {
 	return payloads, scanner.Err()
 }
 
-// parsePayloadLines splits payload content into lines
-func parsePayloadLines(content string) []string {
-	var payloads []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			payloads = append(payloads, line)
-		}
-	}
-	return payloads
-}
-
-// GetPayloads returns base payloads
+// GetPayloads returns base payloads.
 func (pm *PayloadManager) GetPayloads() []string {
 	return pm.basePayloads
 }
 
-// GenerateRegexBypassPayloads creates payloads to bypass faulty regex
-// Maps to Python's generator() function in core/others.py
+// GenerateRegexBypassPayloads creates payloads to bypass faulty regex.
 func (pm *PayloadManager) GenerateRegexBypassPayloads(targetURL string) []string {
 	parsedURL, err := url.Parse(EnsureScheme(targetURL))
 	if err != nil {
@@ -86,68 +56,58 @@ func (pm *PayloadManager) GenerateRegexBypassPayloads(targetURL string) []string
 
 	var regexPayloads []string
 	for _, payload := range pm.basePayloads {
-		// {payload}.{domain} pattern - subdomain style
 		regexPayloads = append(regexPayloads, payload+"."+domain)
-		// {payload}/{domain} pattern - path style
 		regexPayloads = append(regexPayloads, payload+"/"+domain)
 	}
 
 	return regexPayloads
 }
 
-// GetAllPayloads returns base payloads plus regex bypass variants
+// GetAllPayloads returns base payloads plus regex bypass variants.
 func (pm *PayloadManager) GetAllPayloads(targetURL string) []string {
 	all := make([]string, len(pm.basePayloads))
 	copy(all, pm.basePayloads)
 	return append(all, pm.GenerateRegexBypassPayloads(targetURL)...)
 }
 
-// GenerateTestCases generates all test cases for a URL
-// Maps to Python's multitest() function in core/others.py
-func (pm *PayloadManager) GenerateTestCases(targetURL string) []ScanJob {
+// GenerateTestCases generates all test cases for a URL.
+func (pm *PayloadManager) GenerateTestCases(targetURL string) []scanJob {
 	targetURL = EnsureScheme(targetURL)
 	allPayloads := pm.GetAllPayloads(targetURL)
 
-	var jobs []ScanJob
+	var jobs []scanJob
 
-	// Check if URL has query parameters
 	if strings.Contains(targetURL, "=") {
-		// Handle parameterized URLs
 		jobs = pm.generateParameterizedJobs(targetURL, allPayloads)
 	} else {
-		// Handle URLs without parameters - append payloads to path
 		jobs = pm.generatePathJobs(targetURL, allPayloads)
 	}
 
 	return jobs
 }
 
-// generateParameterizedJobs creates jobs for URLs with query parameters
-func (pm *PayloadManager) generateParameterizedJobs(targetURL string, payloads []string) []ScanJob {
+// generateParameterizedJobs creates jobs for URLs with query parameters.
+func (pm *PayloadManager) generateParameterizedJobs(targetURL string, payloads []string) []scanJob {
 	parsedURL, err := url.Parse(targetURL)
 	if err != nil {
 		return nil
 	}
 
-	// Get query parameters
 	query := parsedURL.Query()
 	if len(query) == 0 {
 		return pm.generatePathJobs(targetURL, payloads)
 	}
 
-	// Build base URL without query string
 	baseURL := *parsedURL
 	baseURL.RawQuery = ""
 	baseURLStr := baseURL.String()
 
-	var jobs []ScanJob
+	var jobs []scanJob
 
-	// For each parameter, inject each payload
 	for key := range query {
 		originalValue := query.Get(key)
 
 		for _, payload := range payloads {
-			// Create a copy of query params
 			params := make(map[string]string)
 			for k := range query {
 				if k == key {
@@ -157,7 +117,7 @@ func (pm *PayloadManager) generateParameterizedJobs(targetURL string, payloads [
 				}
 			}
 
-			jobs = append(jobs, ScanJob{
+			jobs = append(jobs, scanJob{
 				URL:     baseURLStr,
 				BaseURL: targetURL,
 				Payload: payload,
@@ -166,23 +126,21 @@ func (pm *PayloadManager) generateParameterizedJobs(targetURL string, payloads [
 			})
 		}
 
-		// Restore original value for next parameter
 		query.Set(key, originalValue)
 	}
 
 	return jobs
 }
 
-// generatePathJobs creates jobs for URLs without query parameters
-func (pm *PayloadManager) generatePathJobs(targetURL string, payloads []string) []ScanJob {
-	// Ensure URL ends with /
+// generatePathJobs creates jobs for URLs without query parameters.
+func (pm *PayloadManager) generatePathJobs(targetURL string, payloads []string) []scanJob {
 	if !strings.HasSuffix(targetURL, "/") {
 		targetURL += "/"
 	}
 
-	var jobs []ScanJob
+	var jobs []scanJob
 	for _, payload := range payloads {
-		jobs = append(jobs, ScanJob{
+		jobs = append(jobs, scanJob{
 			URL:     targetURL + payload,
 			BaseURL: targetURL,
 			Payload: payload,

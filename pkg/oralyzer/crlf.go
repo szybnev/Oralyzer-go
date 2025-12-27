@@ -1,4 +1,4 @@
-package main
+package oralyzer
 
 import (
 	"net/url"
@@ -6,21 +6,20 @@ import (
 	"time"
 )
 
-// NewCRLFScanner creates a CRLF scanner with hardcoded payloads
-func NewCRLFScanner(client *HTTPClient) *CRLFScanner {
+// NewCRLFScanner creates a CRLF scanner with hardcoded payloads.
+func NewCRLFScanner(client *httpClient) *CRLFScanner {
 	return &CRLFScanner{
 		payloads:   CRLFPayloads,
 		httpClient: client,
 	}
 }
 
-// GenerateJobs creates test cases for CRLF scanning
-func (c *CRLFScanner) GenerateJobs(targetURL string) []ScanJob {
+// GenerateJobs creates test cases for CRLF scanning.
+func (c *CRLFScanner) GenerateJobs(targetURL string) []scanJob {
 	targetURL = EnsureScheme(targetURL)
 
-	var jobs []ScanJob
+	var jobs []scanJob
 
-	// Check if URL has query parameters
 	if strings.Contains(targetURL, "=") {
 		jobs = c.generateParameterizedJobs(targetURL)
 	} else {
@@ -30,8 +29,8 @@ func (c *CRLFScanner) GenerateJobs(targetURL string) []ScanJob {
 	return jobs
 }
 
-// generateParameterizedJobs creates jobs for URLs with query parameters
-func (c *CRLFScanner) generateParameterizedJobs(targetURL string) []ScanJob {
+// generateParameterizedJobs creates jobs for URLs with query parameters.
+func (c *CRLFScanner) generateParameterizedJobs(targetURL string) []scanJob {
 	parsedURL, err := url.Parse(targetURL)
 	if err != nil {
 		return c.generatePathJobs(targetURL)
@@ -42,14 +41,12 @@ func (c *CRLFScanner) generateParameterizedJobs(targetURL string) []ScanJob {
 		return c.generatePathJobs(targetURL)
 	}
 
-	// Build base URL without query string
 	baseURL := *parsedURL
 	baseURL.RawQuery = ""
 	baseURLStr := baseURL.String()
 
-	var jobs []ScanJob
+	var jobs []scanJob
 
-	// For each parameter, inject each CRLF payload
 	for key := range query {
 		originalValue := query.Get(key)
 
@@ -63,7 +60,7 @@ func (c *CRLFScanner) generateParameterizedJobs(targetURL string) []ScanJob {
 				}
 			}
 
-			jobs = append(jobs, ScanJob{
+			jobs = append(jobs, scanJob{
 				URL:     baseURLStr,
 				BaseURL: targetURL,
 				Payload: payload,
@@ -78,15 +75,15 @@ func (c *CRLFScanner) generateParameterizedJobs(targetURL string) []ScanJob {
 	return jobs
 }
 
-// generatePathJobs creates jobs for URLs without query parameters
-func (c *CRLFScanner) generatePathJobs(targetURL string) []ScanJob {
+// generatePathJobs creates jobs for URLs without query parameters.
+func (c *CRLFScanner) generatePathJobs(targetURL string) []scanJob {
 	if !strings.HasSuffix(targetURL, "/") {
 		targetURL += "/"
 	}
 
-	var jobs []ScanJob
+	var jobs []scanJob
 	for _, payload := range c.payloads {
-		jobs = append(jobs, ScanJob{
+		jobs = append(jobs, scanJob{
 			URL:     targetURL + payload,
 			BaseURL: targetURL,
 			Payload: payload,
@@ -98,11 +95,11 @@ func (c *CRLFScanner) generatePathJobs(targetURL string) []ScanJob {
 	return jobs
 }
 
-// TestPayload tests a single CRLF payload
-func (c *CRLFScanner) TestPayload(job ScanJob) ScanResult {
+// TestPayload tests a single CRLF payload.
+func (c *CRLFScanner) TestPayload(job scanJob) Result {
 	resp, _, err := c.httpClient.Get(job.URL, job.Params)
 	if err != nil {
-		return ScanResult{
+		return Result{
 			URL:         job.URL,
 			OriginalURL: job.BaseURL,
 			Payload:     job.Payload,
@@ -111,19 +108,7 @@ func (c *CRLFScanner) TestPayload(job ScanJob) ScanResult {
 		}
 	}
 
-	// Convert http.Response to our wrapper
-	httpResp := &httpResponse{
-		StatusCode: resp.StatusCode,
-		Header:     httpHeader(resp.Header),
-	}
-
-	return c.checkInjection(httpResp, job)
-}
-
-// checkInjection examines response headers for CRLF indicators
-// Maps to Python's basicChecks() function in crlf.py
-func (c *CRLFScanner) checkInjection(resp *httpResponse, job ScanJob) ScanResult {
-	result := ScanResult{
+	result := Result{
 		URL:         job.URL,
 		OriginalURL: job.BaseURL,
 		Payload:     job.Payload,
@@ -131,7 +116,7 @@ func (c *CRLFScanner) checkInjection(resp *httpResponse, job ScanJob) ScanResult
 		Timestamp:   time.Now(),
 	}
 
-	// Check for injected Location header (to google.com variants)
+	// Check for injected Location header
 	location := resp.Header.Get("Location")
 	if isGoogleRedirect(location) {
 		result.Vulnerable = true
@@ -150,7 +135,6 @@ func (c *CRLFScanner) checkInjection(resp *httpResponse, job ScanJob) ScanResult
 		}
 	}
 
-	// Check for error codes
 	if isErrorCode(resp.StatusCode) {
 		result.Error = "HTTP error"
 	}
@@ -158,39 +142,9 @@ func (c *CRLFScanner) checkInjection(resp *httpResponse, job ScanJob) ScanResult
 	return result
 }
 
-// httpResponse wraps response data for CRLF checking
-type httpResponse struct {
-	StatusCode int
-	Header     httpHeader
-}
-
-// httpHeader wraps http.Header for convenience
-type httpHeader map[string][]string
-
-func (h httpHeader) Get(key string) string {
-	if values, ok := h[key]; ok && len(values) > 0 {
-		return values[0]
-	}
-	return ""
-}
-
-func (h httpHeader) Values(key string) []string {
-	return h[key]
-}
-
-// isGoogleRedirect checks if Location header points to google.com
-func isGoogleRedirect(location string) bool {
-	for _, g := range GoogleVariants {
-		if location == g {
-			return true
-		}
-	}
-	return false
-}
-
-// Scan tests a URL for CRLF injection (convenience method)
-func (c *CRLFScanner) Scan(targetURL string) []ScanResult {
-	var results []ScanResult
+// Scan tests a URL for CRLF injection.
+func (c *CRLFScanner) Scan(targetURL string) []Result {
+	var results []Result
 
 	jobs := c.GenerateJobs(targetURL)
 	for _, job := range jobs {
@@ -198,9 +152,19 @@ func (c *CRLFScanner) Scan(targetURL string) []ScanResult {
 		results = append(results, result)
 
 		if result.Vulnerable {
-			break // Stop on first vulnerability (like Python)
+			break
 		}
 	}
 
 	return results
+}
+
+// isGoogleRedirect checks if Location header points to google.com.
+func isGoogleRedirect(location string) bool {
+	for _, g := range GoogleVariants {
+		if location == g {
+			return true
+		}
+	}
+	return false
 }
