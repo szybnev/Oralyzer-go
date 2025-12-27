@@ -60,6 +60,15 @@ type Config struct {
 	// InsecureSkipVerify skips TLS certificate verification.
 	// Default is true.
 	InsecureSkipVerify bool
+	// Headers contains custom HTTP headers to send with each request.
+	Headers map[string]string
+	// RetryEnabled enables automatic retry on 429/503 responses.
+	// Default retry delays: 10s, 30s, 60s.
+	RetryEnabled bool
+	// Verbose enables detailed output logging.
+	Verbose bool
+	// Quiet suppresses all output except vulnerabilities.
+	Quiet bool
 }
 
 // Result represents the outcome of scanning a single URL.
@@ -105,9 +114,12 @@ type scanJob struct {
 
 // httpClient wraps http.Client with custom configuration.
 type httpClient struct {
-	client     *http.Client
-	userAgents []string
-	proxyURL   string
+	client       *http.Client
+	userAgents   []string
+	proxyURL     string
+	headers      map[string]string
+	retryEnabled bool
+	retryDelays  []time.Duration
 }
 
 // Scanner manages the scanning process.

@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+// DefaultRetryDelays defines the default retry intervals for 429/503 responses.
+var DefaultRetryDelays = []time.Duration{
+	10 * time.Second,
+	30 * time.Second,
+	60 * time.Second,
+}
+
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
@@ -58,40 +65,89 @@ func newHTTPClient(config *Config) (*httpClient, error) {
 	}
 
 	proxyURL := ""
+	headers := make(map[string]string)
+	retryEnabled := false
+
 	if config != nil {
 		proxyURL = config.ProxyURL
+		if config.Headers != nil {
+			headers = config.Headers
+		}
+		retryEnabled = config.RetryEnabled
 	}
 
 	return &httpClient{
-		client:     client,
-		userAgents: UserAgents,
-		proxyURL:   proxyURL,
+		client:       client,
+		userAgents:   UserAgents,
+		proxyURL:     proxyURL,
+		headers:      headers,
+		retryEnabled: retryEnabled,
+		retryDelays:  DefaultRetryDelays,
 	}, nil
 }
 
-// Get performs an HTTP GET request with random User-Agent.
+// Get performs an HTTP GET request with random User-Agent and retry support.
 func (c *httpClient) Get(targetURL string, params map[string]string) (*http.Response, []byte, error) {
 	finalURL, err := buildRequestURL(targetURL, params)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	req, err := http.NewRequest("GET", finalURL, nil)
-	if err != nil {
-		return nil, nil, err
+	var resp *http.Response
+	var body []byte
+	var lastErr error
+
+	// Try initial request + retries
+	maxAttempts := 1
+	if c.retryEnabled {
+		maxAttempts = len(c.retryDelays) + 1
 	}
 
-	req.Header.Set("User-Agent", c.randomUserAgent())
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Wait before retry (skip first attempt)
+		if attempt > 0 && c.retryEnabled {
+			time.Sleep(c.retryDelays[attempt-1])
+		}
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, nil, err
+		req, err := http.NewRequest("GET", finalURL, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// Set User-Agent
+		req.Header.Set("User-Agent", c.randomUserAgent())
+
+		// Set custom headers
+		for key, value := range c.headers {
+			req.Header.Set(key, value)
+		}
+
+		resp, err = c.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Check if we need to retry (429 Too Many Requests, 503 Service Unavailable)
+		if c.retryEnabled && (resp.StatusCode == 429 || resp.StatusCode == 503) {
+			resp.Body.Close()
+			if attempt < len(c.retryDelays) {
+				continue // Retry
+			}
+		}
+
+		// Read body
+		body, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return resp, nil, err
+		}
+
+		return resp, body, nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return resp, nil, err
+	if lastErr != nil {
+		return nil, nil, lastErr
 	}
 
 	return resp, body, nil

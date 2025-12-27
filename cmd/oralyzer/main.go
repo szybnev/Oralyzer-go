@@ -32,16 +32,20 @@ var (
 )
 
 var (
-	targetURL   string
-	listFile    string
-	payloadFile string
-	crlfMode    bool
-	waybackMode bool
-	proxyURL    string
-	concurrency int
-	outputFile  string
-	jsonOutput  bool
-	timeout     time.Duration
+	targetURL    string
+	listFile     string
+	payloadFile  string
+	crlfMode     bool
+	waybackMode  bool
+	proxyURL     string
+	concurrency  int
+	outputFile   string
+	jsonOutput   bool
+	timeout      time.Duration
+	headers      []string
+	retryEnabled bool
+	verbose      bool
+	quiet        bool
 )
 
 var rootCmd = &cobra.Command{
@@ -64,6 +68,10 @@ func init() {
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path")
 	rootCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output results as JSON")
 	rootCmd.Flags().DurationVarP(&timeout, "timeout", "t", 10*time.Second, "HTTP request timeout")
+	rootCmd.Flags().StringArrayVarP(&headers, "header", "H", nil, "Custom header (can be used multiple times: -H 'Cookie: x' -H 'Auth: y')")
+	rootCmd.Flags().BoolVar(&retryEnabled, "retry", false, "Enable retry on 429/503 (delays: 10s, 30s, 60s)")
+	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output (show all requests)")
+	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Quiet mode (only show vulnerabilities)")
 }
 
 func main() {
@@ -73,7 +81,9 @@ func main() {
 }
 
 func runScan(cmd *cobra.Command, args []string) {
-	printBanner()
+	if !quiet {
+		printBanner()
+	}
 
 	if targetURL == "" && listFile == "" {
 		fmt.Printf("%s Either -u (URL) or -l (list file) is required\n", PrefixBad)
@@ -83,6 +93,11 @@ func runScan(cmd *cobra.Command, args []string) {
 
 	if payloadFile != "" && (crlfMode || waybackMode) {
 		fmt.Printf("%s '-p' can't be used with '--crlf' or '--wayback'\n", PrefixBad)
+		return
+	}
+
+	if verbose && quiet {
+		fmt.Printf("%s Cannot use --verbose and --quiet together\n", PrefixBad)
 		return
 	}
 
@@ -101,7 +116,9 @@ func runScan(cmd *cobra.Command, args []string) {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		fmt.Println("\nQuitting...")
+		if !quiet {
+			fmt.Println("\nQuitting...")
+		}
 		cancel()
 	}()
 
@@ -111,12 +128,19 @@ func runScan(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	// Parse custom headers
+	customHeaders := parseHeaders(headers)
+
 	// Build config
 	config := &oralyzer.Config{
-		URLs:        urls,
-		ProxyURL:    proxyURL,
-		Concurrency: concurrency,
-		Timeout:     timeout,
+		URLs:         urls,
+		ProxyURL:     proxyURL,
+		Concurrency:  concurrency,
+		Timeout:      timeout,
+		Headers:      customHeaders,
+		RetryEnabled: retryEnabled,
+		Verbose:      verbose,
+		Quiet:        quiet,
 	}
 
 	// Load custom payloads if specified
@@ -157,13 +181,21 @@ func runScan(cmd *cobra.Command, args []string) {
 	// Stats
 	var totalResults, vulnerableCount, errorCount int
 
-	// Scan with callback
-	for _, url := range urls {
-		fmt.Printf("%s Target: %s\n", PrefixInfo, url)
-		if crlfMode {
-			fmt.Printf("%s Scanning for CRLF injection\n", PrefixInfo)
-		} else {
-			fmt.Printf("%s Infusing payloads\n", PrefixInfo)
+	// Print scan info
+	if !quiet {
+		for _, url := range urls {
+			fmt.Printf("%s Target: %s\n", PrefixInfo, url)
+			if crlfMode {
+				fmt.Printf("%s Scanning for CRLF injection\n", PrefixInfo)
+			} else {
+				fmt.Printf("%s Infusing payloads\n", PrefixInfo)
+			}
+		}
+		if retryEnabled {
+			fmt.Printf("%s Retry enabled (10s, 30s, 60s delays)\n", PrefixInfo)
+		}
+		if len(customHeaders) > 0 {
+			fmt.Printf("%s Using %d custom header(s)\n", PrefixInfo, len(customHeaders))
 		}
 	}
 
@@ -176,11 +208,13 @@ func runScan(cmd *cobra.Command, args []string) {
 			errorCount++
 		}
 
-		// Output result
+		// Output result based on mode
 		if jsonOutput {
-			writeJSON(result, outFile)
+			if !quiet || result.Vulnerable {
+				writeJSON(result, outFile)
+			}
 		} else {
-			writeTerminal(result, outFile)
+			writeTerminalWithMode(result, outFile, verbose, quiet)
 		}
 	})
 
@@ -189,11 +223,27 @@ func runScan(cmd *cobra.Command, args []string) {
 	}
 
 	// Print summary
-	fmt.Printf("\n%s Scan complete. %d/%d URLs vulnerable", PrefixInfo, vulnerableCount, totalResults)
-	if errorCount > 0 {
-		fmt.Printf(" (%d errors)", errorCount)
+	if !quiet {
+		fmt.Printf("\n%s Scan complete. %d/%d URLs vulnerable", PrefixInfo, vulnerableCount, totalResults)
+		if errorCount > 0 {
+			fmt.Printf(" (%d errors)", errorCount)
+		}
+		fmt.Println()
 	}
-	fmt.Println()
+}
+
+// parseHeaders converts header strings to map
+func parseHeaders(headerList []string) map[string]string {
+	result := make(map[string]string)
+	for _, h := range headerList {
+		parts := strings.SplitN(h, ":", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func loadURLs(singleURL, listPath string) ([]string, error) {
@@ -289,51 +339,70 @@ func sanitizeFilename(url string) string {
 	return result
 }
 
-func writeTerminal(result oralyzer.Result, outFile *os.File) {
+func writeTerminalWithMode(result oralyzer.Result, outFile *os.File, verbose, quiet bool) {
+	// Quiet mode: only show vulnerabilities
+	if quiet {
+		if result.Vulnerable {
+			writeVulnerability(result)
+		}
+		writeToFile(result, outFile)
+		return
+	}
+
+	// Handle errors
 	if result.Error != "" {
-		if strings.Contains(result.Error, "timeout") {
-			fmt.Printf("[%sTimeout%s] %s\n", ColorRed, ColorReset, result.URL)
-		} else {
-			fmt.Printf("%s Connection Error :: %s\n", PrefixBad, result.URL)
+		if verbose {
+			if strings.Contains(result.Error, "timeout") {
+				fmt.Printf("[%sTimeout%s] %s\n", ColorRed, ColorReset, result.URL)
+			} else {
+				fmt.Printf("%s Connection Error :: %s :: %s\n", PrefixBad, result.URL, result.Error)
+			}
 		}
 		writeToFile(result, outFile)
 		return
 	}
 
+	// Not vulnerable
 	if !result.Vulnerable && result.VulnType == oralyzer.VulnNone {
-		if result.StatusCode >= 400 && result.StatusCode <= 410 {
-			fmt.Printf("%s %s [%s%d%s]\n", PrefixBad, result.URL, ColorRed, result.StatusCode, ColorReset)
-		} else {
-			fmt.Printf("%s Found nothing :: %s\n", PrefixBad, result.URL)
+		if verbose {
+			if result.StatusCode >= 400 && result.StatusCode <= 410 {
+				fmt.Printf("%s %s [%s%d%s]\n", PrefixBad, result.URL, ColorRed, result.StatusCode, ColorReset)
+			} else {
+				fmt.Printf("%s [%d] %s\n", PrefixBad, result.StatusCode, result.URL)
+			}
 		}
 		writeToFile(result, outFile)
 		return
 	}
 
+	// Vulnerable - always show
+	writeVulnerability(result)
+	writeToFile(result, outFile)
+}
+
+func writeVulnerability(result oralyzer.Result) {
 	switch result.VulnType {
 	case oralyzer.VulnHeaderRedirect:
 		fmt.Printf("%s Header Based Redirection : %s %s  %s\n",
 			PrefixGood, result.URL, ArrowSymbol, result.RedirectURL)
 
 	case oralyzer.VulnJavaScript:
-		fmt.Printf("%s Javascript Based Redirection\n", PrefixGood)
+		fmt.Printf("%s Javascript Based Redirection : %s\n", PrefixGood, result.URL)
 		if len(result.SourcesSinks) > 0 {
 			fmt.Printf("%s Potentially Vulnerable Source/Sink(s) Found: %s%s%s\n",
 				PrefixGood, ColorBold, strings.Join(result.SourcesSinks, " "), ColorReset)
 		}
 
 	case oralyzer.VulnMetaTag:
-		fmt.Printf("%s Meta Tag Redirection\n", PrefixGood)
+		fmt.Printf("%s Meta Tag Redirection : %s\n", PrefixGood, result.URL)
 
 	case oralyzer.VulnCRLFInjection:
-		fmt.Printf("%s HTTP Response Splitting found\n", PrefixGood)
+		fmt.Printf("%s HTTP Response Splitting found : %s\n", PrefixGood, result.URL)
 		fmt.Printf("%s Payload : %s\n", PrefixInfo, result.Payload)
 
 	case oralyzer.VulnPageRefresh:
-		fmt.Printf("%s The page is only getting refreshed\n", PrefixBad)
+		fmt.Printf("%s Page refresh (not vulnerable) : %s\n", PrefixBad, result.URL)
 	}
-
-	writeToFile(result, outFile)
 }
 
 func writeJSON(result oralyzer.Result, outFile *os.File) {
