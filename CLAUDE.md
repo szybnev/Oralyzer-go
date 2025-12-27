@@ -42,7 +42,7 @@ go build -o oralyzer .
 ### Installation
 
 ```bash
-go get github.com/r0075h3ll/oralyzer/pkg/oralyzer
+go get github.com/szybnev/Oralyzer-go/pkg/oralyzer
 ```
 
 ### Quick Start
@@ -55,7 +55,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/r0075h3ll/oralyzer/pkg/oralyzer"
+    "github.com/szybnev/Oralyzer-go/pkg/oralyzer"
 )
 
 func main() {

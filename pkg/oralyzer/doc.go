@@ -4,7 +4,7 @@ CRLF injection, and harvesting URLs from the Wayback Machine.
 
 # Installation
 
-	go get github.com/r0075h3ll/oralyzer/pkg/oralyzer
+	go get github.com/szybnev/Oralyzer-go/pkg/oralyzer
 
 # Quick Start
 
@@ -17,7 +17,7 @@ Scan a single URL for open redirect vulnerabilities:
 		"fmt"
 		"log"
 
-		"github.com/r0075h3ll/oralyzer/pkg/oralyzer"
+		"github.com/szybnev/Oralyzer-go/pkg/oralyzer"
 	)
 
 	func main() {

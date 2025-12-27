@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/r0075h3ll/oralyzer/pkg/oralyzer"
+	"github.com/szybnev/Oralyzer-go/pkg/oralyzer"
 	"github.com/spf13/cobra"
 )
 

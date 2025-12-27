@@ -1,4 +1,4 @@
-module github.com/r0075h3ll/oralyzer
+module github.com/szybnev/Oralyzer-go
 
 go 1.21
 
