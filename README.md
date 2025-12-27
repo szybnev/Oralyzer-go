@@ -1,37 +1,60 @@
 ### Introduction
 
-
-Oralyzer, a simple python script that probes for Open Redirection vulnerability in a website. It does that by fuzzing the URL that is provided in the input.
+Oralyzer is a security tool that probes for Open Redirect vulnerabilities in websites. It fuzzes URLs with payloads to identify vulnerable redirect parameters.
 
 ### Features
 
 Oralyzer can identify following types of Open Redirect Vulnerabilities:
- - Header Based
- - Javascript Based
- - Meta Tag Based<br>
+ - Header Based (3xx redirects)
+ - Javascript Based (DOM-based redirects)
+ - Meta Tag Based (http-equiv refresh)
 
-Also, Oralyzer has its own module to fetch URLs from web.archive.org, it then separates the URLs that have specific parameters in them, parameters that are more likely to be vulnerable.
+Additional features:
+- CRLF Injection Detection
+- Wayback Machine URL enumeration
+- Concurrent scanning with configurable workers
+- JSON output support
+- Proxy support
 
 ### Installation
 
-```
-$ git clone https://github.com/r0075h3ll/Oralyzer.git
-$ pip3 install -r requirements.txt
+```bash
+git clone https://github.com/szybnev/Oralyzer-go && cd Oralyzer && go build -o oralyzer .
 ```
 
 ### Usage
-<img src="https://i.ibb.co/xSdTvBW/carbon-1.png">
 
-### Features
+```bash
+# Single URL scan
+./oralyzer -u "http://example.com/?redirect=test"
 
-- [x] Improved DOM XSS detection mechanism
-- [x] Test multiple parameters in one run
-- [x] CRLF Injection Detection
+# Multiple URLs from file with 20 concurrent workers
+./oralyzer -l urls.txt -c 20
 
-### Contribution
+# CRLF injection scan
+./oralyzer -u "http://example.com/?param=test" --crlf
 
-You can contribute to this project in following ways:
+# Fetch URLs from Wayback Machine
+./oralyzer -u "example.com" --wayback
 
-- Create pull requests
-- Report bugs
-- Hit me up on <a href='http://twitter.com/r0075h3ll'>Twitter</a> with a new idea/feature
+# JSON output with proxy
+./oralyzer -u "http://example.com/?url=test" --json --proxy http://127.0.0.1:8080
+
+# Save results to file
+./oralyzer -u "http://example.com/?next=test" -o results.txt
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-u, --url` | Single target URL |
+| `-l, --list` | File with multiple URLs |
+| `-p, --payloads` | Custom payloads file |
+| `--crlf` | CRLF injection scan |
+| `--wayback` | Fetch from archive.org |
+| `--proxy` | Proxy URL |
+| `-c, --concurrency` | Parallel workers (default: 10) |
+| `-o, --output` | Output file |
+| `--json` | JSON output |
+| `-t, --timeout` | HTTP timeout (default: 10s) |

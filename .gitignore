@@ -1,0 +1,12 @@
+# Binary
+oralyzer
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test output
+*.txt
+!payloads.txt
