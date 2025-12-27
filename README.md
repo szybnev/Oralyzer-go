@@ -1,3 +1,5 @@
+[Русская версия](README.ru.md)
+
 ### Introduction
 
 Oralyzer is a security tool that probes for Open Redirect vulnerabilities in websites. It fuzzes URLs with payloads to identify vulnerable redirect parameters.
